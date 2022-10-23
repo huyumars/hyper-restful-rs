@@ -31,10 +31,7 @@ use log::{info, warn};
 
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::oneshot::{Receiver, Sender};
-use tokio::time::sleep;
-use crate::http::handler::{GET, POST};
 
-use crate::http::handler::Filter;
 use crate::http::router::Router;
 
 pub struct HttpServer {
@@ -132,60 +129,63 @@ impl HttpServer {
 }
 
 
-#[test]
-fn service_test() {
-    let mut r1 = Router::new();
-    let b = GET()
-        .start_with("/hello")
-        .handle_request()
-        .then(|_| "world")
-        .ok();
-    let mut r2 = Router::new();
-    let c = GET()
-        .start_with("/ggg")
-        .handle_request()
-        .then(|_| "lalala")
-        .ok();
-    r1.add(b);
-    r2.add(c);
-    r1 = r1.merge(r2);
-    let mut s = HttpServer::new("my_service".to_string(), r1, 1).unwrap();
-    s.start("127.0.0.1:8080".to_string()).unwrap();
-    let _ = sleep(Duration::from_secs(1));
-    s.stop();
-}
-
-#[test]
-fn json_test() {
-    use serde::{Serialize, Deserialize};
-    #[derive(Serialize, Deserialize)]
-    struct Req {
-        seq: i32,
-        msg: String,
-    }
-
-    #[derive(Serialize)]
-    struct Res {
-        seq: i32,
-        msg: String,
-    }
-    let mut r = Router::new();
-    r.add(
-        POST()
-            .start_with("/reverse")
-            .handle_request()
-            .parse_json()
-            .then_async(|rr: std::result::Result<Req, serde_json::Error>| async move {
-                let r = rr.unwrap();
-                Res {
-                    seq: r.seq + 1,
-                    msg: format!("{}!", r.msg),
-                }
-            })
-            .to_json()
-    );
-    let mut s = HttpServer::new("my_service".to_string(), r, 1).unwrap();
-    s.start("127.0.0.1:8080".to_string()).unwrap();
-    let _ = sleep(Duration::from_secs(1000000));
-    s.stop();
-}
+// use tokio::time::sleep;
+// use crate::http::handler::{GET, POST};
+// use crate::http::handler::Filter;
+// #[test]
+// fn service_test() {
+//     let mut r1 = Router::new();
+//     let b = GET()
+//         .start_with("/hello")
+//         .handle_request()
+//         .then(|_| "world")
+//         .ok();
+//     let mut r2 = Router::new();
+//     let c = GET()
+//         .start_with("/ggg")
+//         .handle_request()
+//         .then(|_| "lalala")
+//         .ok();
+//     r1.add(b);
+//     r2.add(c);
+//     r1 = r1.merge(r2);
+//     let mut s = HttpServer::new("my_service".to_string(), r1, 1).unwrap();
+//     s.start("127.0.0.1:8080".to_string()).unwrap();
+//     let _ = sleep(Duration::from_secs(1));
+//     s.stop();
+// }
+//
+// #[test]
+// fn json_test() {
+//     use serde::{Serialize, Deserialize};
+//     #[derive(Serialize, Deserialize)]
+//     struct Req {
+//         seq: i32,
+//         msg: String,
+//     }
+//
+//     #[derive(Serialize)]
+//     struct Res {
+//         seq: i32,
+//         msg: String,
+//     }
+//     let mut r = Router::new();
+//     r.add(
+//         POST()
+//             .start_with("/reverse")
+//             .handle_request()
+//             .parse_json()
+//             .then_async(|rr: std::result::Result<Req, serde_json::Error>| async move {
+//                 let r = rr.unwrap();
+//                 Res {
+//                     seq: r.seq + 1,
+//                     msg: format!("{}!", r.msg),
+//                 }
+//             })
+//             .to_json()
+//     );
+//     let mut s = HttpServer::new("my_service".to_string(), r, 1).unwrap();
+//     s.start("127.0.0.1:8080".to_string()).unwrap();
+//     let _ = sleep(Duration::from_secs(1000000));
+//     s.stop();
+// }

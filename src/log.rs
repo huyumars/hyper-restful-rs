@@ -1,1 +1,1 @@
-mod simple_logger;
+pub mod simple_logger;
