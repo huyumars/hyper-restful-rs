@@ -1,5 +1,3 @@
-use std::error::Error;
-use std::fmt::{Debug, Display};
 use std::future::Future;
 
 use futures_util::future::ok;
@@ -9,6 +7,7 @@ use serde::{de, Serialize};
 
 
 use crate::pipeline::connect::Connect;
+use crate::pipeline::link;
 use crate::pipeline::link::{begin, Linkable, Pipeline, Start};
 
 macro_rules! generate_filter_method {
@@ -72,7 +71,7 @@ impl<T, P> Filter for EntryBase<T, P> where T: Filter, P: Sync + Send {
     }
 }
 
-// we need return <impl Pipeline>, and now IN, so we need define EntryBase<..,Start> specially
+// we need return <impl Pipeline>, and know IN. so we have to define EntryBase<..,Start> specially
 impl<T, IN> EntryBase<T, Start<IN>> {
     pub fn then_async<NXT, F, Fut>(self: Self, f: F) -> EntryBase<T, impl Pipeline<IN=IN, OUT=NXT>>
         where F: Fn(IN) -> Fut + 'static + Send + Sync,
@@ -85,6 +84,17 @@ impl<T, IN> EntryBase<T, Start<IN>> {
             pipeline: self.pipeline.then_async(f),
         }
     }
+    pub fn then_async_result<NXT, F, Fut>(self: Self, f: F) -> EntryBase<T, impl Pipeline<IN=IN, OUT=NXT>>
+        where F: Fn(IN) -> Fut + 'static + Send + Sync,
+              Fut: Future<Output=Result<NXT, link::Error>> + Send + Sync + 'static,
+              IN: Send + Sync,
+              NXT: Send + Sync,
+              Self: Sized {
+        EntryBase {
+            test: self.test,
+            pipeline: self.pipeline.then_async_result(f),
+        }
+    }
     pub fn then<NXT, F>(self: Self, f: F) -> EntryBase<T, impl Pipeline<IN=IN, OUT=NXT>>
         where F: Fn(IN) -> NXT + Send + Sync,
               NXT: Send + Sync,
@@ -93,6 +103,16 @@ impl<T, IN> EntryBase<T, Start<IN>> {
         EntryBase {
             test: self.test,
             pipeline: self.pipeline.then(f),
+        }
+    }
+    pub fn then_result<NXT, F>(self: Self, f: F) -> EntryBase<T, impl Pipeline<IN=IN, OUT=NXT>>
+        where F: Fn(IN) -> Result<NXT, link::Error> + Send + Sync,
+              NXT: Send + Sync,
+              IN: Send + Sync,
+              Self: Sized {
+        EntryBase {
+            test: self.test,
+            pipeline: self.pipeline.then_result(f),
         }
     }
 }
@@ -109,6 +129,16 @@ impl<T, P> EntryBase<T, P>
             pipeline: self.pipeline.then_async(f),
         }
     }
+    pub fn then_async_result<NXT, F, Fut>(self: Self, f: F) -> EntryBase<T, impl Pipeline<IN=P::IN, OUT=NXT>>
+        where F: Fn(P::OUT) -> Fut + 'static + Send + Sync,
+              Fut: Future<Output=Result<NXT, link::Error>> + Send + Sync + 'static,
+              NXT: Send + Sync,
+              Self: Sized {
+        EntryBase {
+            test: self.test,
+            pipeline: self.pipeline.then_async_result(f),
+        }
+    }
     pub fn then<NXT, F>(self: Self, f: F) -> EntryBase<T, impl Pipeline<IN=P::IN, OUT=NXT>>
         where F: Fn(P::OUT) -> NXT + Send + Sync,
               NXT: Send + Sync,
@@ -116,6 +146,15 @@ impl<T, P> EntryBase<T, P>
         EntryBase {
             test: self.test,
             pipeline: self.pipeline.then(f),
+        }
+    }
+    pub fn then_result<NXT, F>(self: Self, f: F) -> EntryBase<T, impl Pipeline<IN=P::IN, OUT=NXT>>
+        where F: Fn(P::OUT) -> Result<NXT, link::Error> + Send + Sync,
+              NXT: Send + Sync,
+              Self: Sized {
+        EntryBase {
+            test: self.test,
+            pipeline: self.pipeline.then_result(f),
         }
     }
 }
@@ -146,19 +185,14 @@ impl<T, P> EntryBase<T, P> where
     {
         EntryBase {
             test: self.test,
-            pipeline: self.pipeline.then_async_may_fail(|req| async {
+            pipeline: self.pipeline.then_async_result(|req| async {
                 let mut body = Vec::new();
                 req.into_body()
                     .try_for_each(|bytes| {
                         body.extend(bytes);
                         ok(())
-                    })
-                    .await.unwrap();
-                //serde_json::from_slice::<NXT>(&body)
-                match serde_json::from_slice::<NXT>(&body) {
-                    Ok(t) => Ok(t),
-                    Err(e) => Err(e.into())
-                }
+                    }).await?;
+                Ok(serde_json::from_slice::<NXT>(&body)?)
             }),
         }
     }
@@ -187,10 +221,9 @@ impl<T, P> EntryBase<T, P> where
         }
     }
 
-    pub fn ret<IN, E>(self: Self) -> EntryBase<T, impl Pipeline<IN=P::IN, OUT=HyperResp>>
-        where P: Pipeline<OUT=Result<IN, E>>,
+    pub fn ret<IN>(self: Self) -> EntryBase<T, impl Pipeline<IN=P::IN, OUT=HyperResp>>
+        where P: Pipeline<OUT=Result<IN, link::Error>>,
               IN: Into<Body>,
-              E: Error
     {
         EntryBase {
             test: self.test,
@@ -210,32 +243,9 @@ impl<T, P> EntryBase<T, P> where
     {
         EntryBase {
             test: self.test,
-            pipeline: self.pipeline.then_async(|obj| async move {
-                let s = serde_json::to_string(&obj).unwrap();
-                Response::new(Body::from(s))
-            }),
-        }
-    }
-
-    pub fn ret_to_json<IN, E>(self: Self) -> EntryBase<T, impl Pipeline<IN=P::IN, OUT=HyperResp>>
-        where P: Pipeline<OUT=Result<IN, E>>,
-              IN: Serialize + 'static + Send + Sync,
-              E: Debug + Display + Send + Sync + 'static
-    {
-        EntryBase {
-            test: self.test,
-            pipeline: self.pipeline.then_async(|obj| async move {
-                match obj {
-                    Ok(obj) => {
-                        match serde_json::to_string(&obj) {
-                            Ok(s) => Response::new(Body::from(s)),
-                            Err(err) => Response::builder()
-                                .status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::from(err.to_string())).unwrap()
-                        }
-                    }
-                    Err(err) => Response::builder()
-                        .status(StatusCode::INTERNAL_SERVER_ERROR).body(Body::from(err.to_string())).unwrap()
-                }
+            pipeline: self.pipeline.then_async_result(|obj| async move {
+                let s = serde_json::to_string(&obj)?;
+                Ok(Response::new(Body::from(s)))
             }),
         }
     }
@@ -282,102 +292,102 @@ pub trait Select {
 }
 
 
-// use std::time::Duration;
-// use tokio::time::sleep;
-// use crate::http::router::Router;
-// #[tokio::test]
-// async fn test_router() {
-//     async fn pf(tuple: (String, HyperReq)) -> hyper::Result<HyperResp> {
-//         let (_, req) = tuple;
-//         let mut body = Vec::new();
-//         req.into_body()
-//             .try_for_each(|bytes| {
-//                 body.extend(bytes);
-//                 ok(())
-//             })
-//             .await?;
-//         let mut sufix = Vec::from("!");
-//         body.append(&mut sufix);
-//         Ok(Response::builder()
-//             .status(200).body(Body::from(body)).unwrap())
-//     }
-//     let a = GET().start_with("hello").handle()
-//         .then_async(pf)
-//         .then(|x| x)
-//         .then_async(|r| async move {
-//             sleep(Duration::from_secs(1)).await;
-//             r
-//         });
-//     assert!(a.test("hello world"));
-//     assert_eq!(a.method(), Method::GET);
-//     let res = a.proc("aa".to_string(), Request::new(Body::from("aaa"))).await;
-//     let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
-//     println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
-//
-//     let mut r = Router::new();
-//     r.add(a);
-//     let res2 = r.process(Method::GET, "hello world".to_string(), Request::new(Body::from("ccc"))).await;
-//     let whole_body = hyper::body::to_bytes(res2.unwrap().into_body()).await.unwrap();
-//     println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
-// }
-//
-//
-// #[tokio::test]
-// async fn test_ok() {
-//     {
-//         let a = GET().start_with("hello").handle_request().ok_with_msg("");
-//         assert!(a.test("hello world"));
-//         assert_eq!(a.method(), Method::GET);
-//         let res = a.proc("aa".to_string(), Request::new(Body::from("aaa"))).await;
-//         let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
-//         println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
-//     }
-//     {
-//         let a = GET().start_with("hello")
-//             .handle_request()
-//             .then(|_| "message")
-//             .ok();
-//         assert!(a.test("hello world"));
-//         assert_eq!(a.method(), Method::GET);
-//         let res = a.proc("aa".to_string(), Request::new(Body::from("aaa"))).await;
-//         let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
-//         println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
-//     }
-// }
-//
-// #[tokio::test]
-// async fn test_parse_json() {
-//     use serde::{Serialize, Deserialize};
-//
-//     #[derive(Serialize, Deserialize)]
-//     struct Fire {
-//         a: i32,
-//         b: String,
-//     }
-//
-//     #[derive(Serialize)]
-//     struct Hole {
-//         c: i32,
-//         d: String,
-//     }
-//
-//     let h = GET().eq("hello").handle_request()
-//         .parse_json()
-//         .then(|fr: Result<Fire, serde_json::Error>| -> Result<Hole, String>{
-//             let f = fr.unwrap();
-//             println!("{} {}", f.a, f.b);
-//             Ok(Hole {
-//                 c: f.a,
-//                 d: f.b,
-//             })
-//         }).ret_to_json();
-//
-//     let f = Fire {
-//         a: 10,
-//         b: "123".to_string(),
-//     };
-//     let fjson = serde_json::to_string(&f).unwrap();
-//     let res = h.proc("hello".to_string(), Request::new(Body::from(fjson))).await;
-//     let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
-//     println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
-// }
+
+#[tokio::test]
+async fn test_router() {
+    use std::time::Duration;
+    use tokio::time::sleep;
+    use crate::http::router::Router;
+    async fn pf(tuple: (String, HyperReq)) -> Result<HyperResp, link::Error> {
+        let (_, req) = tuple;
+        let mut body = Vec::new();
+        req.into_body()
+            .try_for_each(|bytes| {
+                body.extend(bytes);
+                ok(())
+            })
+            .await?;
+        let mut sufix = Vec::from("!");
+        body.append(&mut sufix);
+        Ok(Response::builder()
+            .status(200).body(Body::from(body)).unwrap())
+    }
+    let a = GET().start_with("hello").handle()
+        .then_async_result(pf)
+        .then(|x| x)
+        .then_async(|r| async move {
+            sleep(Duration::from_secs(1)).await;
+            r
+        });
+    assert!(a.test("hello world"));
+    assert_eq!(a.method(), Method::GET);
+    let res = a.proc("aa".to_string(), Request::new(Body::from("aaa"))).await;
+    let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
+    println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
+
+    let mut r = Router::new();
+    r.add(a);
+    let res2 = r.process(Method::GET, "hello world".to_string(), Request::new(Body::from("ccc"))).await;
+    let whole_body = hyper::body::to_bytes(res2.unwrap().into_body()).await.unwrap();
+    println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
+}
+
+
+#[tokio::test]
+async fn test_ok() {
+    {
+        let a = GET().start_with("hello").handle_request().ok_with_msg("");
+        assert!(a.test("hello world"));
+        assert_eq!(a.method(), Method::GET);
+        let res = a.proc("aa".to_string(), Request::new(Body::from("aaa"))).await;
+        let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
+        println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
+    }
+    {
+        let a = GET().start_with("hello")
+            .handle_request()
+            .then(|_| "message")
+            .ok();
+        assert!(a.test("hello world"));
+        assert_eq!(a.method(), Method::GET);
+        let res = a.proc("aa".to_string(), Request::new(Body::from("aaa"))).await;
+        let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
+        println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
+    }
+}
+
+#[tokio::test]
+async fn test_parse_json() {
+    use serde::{Serialize, Deserialize};
+
+    #[derive(Serialize, Deserialize)]
+    struct Fire {
+        a: i32,
+        b: String,
+    }
+
+    #[derive(Serialize)]
+    struct Hole {
+        c: i32,
+        d: String,
+    }
+
+    let h = GET().eq("hello").handle_request()
+        .parse_json()
+        .then(|f: Fire| {
+            println!("{} {}", f.a, f.b);
+            Hole {
+                c: f.a,
+                d: f.b,
+            }
+        }).to_json();
+
+    let f = Fire {
+        a: 10,
+        b: "123".to_string(),
+    };
+    let fjson = serde_json::to_string(&f).unwrap();
+    let res = h.proc("hello".to_string(), Request::new(Body::from(fjson))).await;
+    let whole_body = hyper::body::to_bytes(res.unwrap().into_body()).await.unwrap();
+    println!("ddd: {}", String::from_utf8(whole_body.to_vec()).unwrap());
+}

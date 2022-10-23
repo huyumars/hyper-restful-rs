@@ -1,4 +1,5 @@
-use crate::pipeline::link::{begin, Linkable, Pipeline};
+
+
 
 #[tokio::test]
 async fn test_pipeline() {
@@ -6,10 +7,11 @@ async fn test_pipeline() {
     use tokio::time::sleep;
     use log;
     use crate::log::simple_logger;
+    use crate::pipeline::link::{begin, Linkable, Pipeline};
     simple_logger::init().unwrap();
 
     let p = begin::<i32>()
-        .then_may_fail(|x| {
+        .then_result(|x| {
             match x % 2 {
                 0 => Ok(x),
                 1 => Err(std::io::Error::from_raw_os_error(x).into()),
@@ -19,7 +21,7 @@ async fn test_pipeline() {
         log::info!("{} pass by", x);
         x
     })
-        .then_async_may_fail(|x| async move {
+        .then_async_result(|x| async move {
             match x % 3 {
                 0 => Ok(x),
                 1 => Err("something wrong".into()),
@@ -38,4 +40,31 @@ async fn test_pipeline() {
     let v = p.process(10).await.err().unwrap();
     log::info!("err: {}", v);
 }
+
+
+#[tokio::test]
+async fn handle_differen_err() {
+    use std::fs;
+    use serde::{Serialize, Deserialize};
+    use crate::pipeline::link::{begin, Linkable, Pipeline};
+    #[derive(Serialize, Deserialize)]
+    struct Fire {
+        a: i32,
+        b: String,
+    }
+    let p = begin().then_async_result(
+        |x: i32| async move {
+            let _: Fire = serde_json::from_str("adb")?;
+            let _ = fs::read("nonono")?;
+            Ok(x)
+        }
+    ).then_result(|x| {
+        let _: Fire = serde_json::from_str("adb")?;
+        let _ = fs::read("nonono")?;
+        Ok(x)
+    });
+    let r = p.process(10).await;
+    println!("{}", r.err().unwrap())
+}
+
 

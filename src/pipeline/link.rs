@@ -17,9 +17,9 @@ pub trait Linkable {
         }
     }
 
-    fn then_async_may_fail<F, FUT, NXT, ERR>(self: Self, f: F) -> AsyncConnect<Self, ErrorFuc<F>>
+    fn then_async_result<F, FUT, NXT>(self: Self, f: F) -> AsyncConnect<Self, ErrorFuc<F>>
         where F: Fn(Self::OUT) -> FUT,
-              FUT: Future<Output=Result<NXT, ERR>> + Send + Sync,
+              FUT: Future<Output=Result<NXT, Error>> + Send + Sync,
               Self: Sized {
         AsyncConnect {
             prev: self,
@@ -36,7 +36,7 @@ pub trait Linkable {
         }
     }
 
-    fn then_may_fail<F, NXT>(self: Self, f: F) -> Connect<Self, ErrorFuc<F>>
+    fn then_result<F, NXT>(self: Self, f: F) -> Connect<Self, ErrorFuc<F>>
         where F: Fn(Self::OUT) -> Result<NXT, Error>,
               Self: Sized {
         Connect {

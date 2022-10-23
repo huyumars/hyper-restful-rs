@@ -64,7 +64,13 @@ impl Router {
                         "not found",
                     )),
                     Some(processor) => {
-                        processor.proc(path, body).await
+                        match processor.proc(path, body).await {
+                            Ok(t) => Ok(t),
+                            Err(e) => Ok(Self::err_response(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                e.to_string()
+                            ))
+                        }
                     }
                 }
             }
